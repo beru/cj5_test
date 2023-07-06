@@ -366,7 +366,7 @@ static inline void cj5__set_error(cj5_result* r, cj5_error_code code, int line, 
 static bool cj5__parse_primitive(cj5__parser* parser, cj5_result* r, const char* json5, int len,
                                  cj5_token* tokens, int max_tokens)
 {
-    cj5_token* token;
+    cj5_token* token = NULL;
     int start = parser->pos;
     int line_start = start;
     bool keyname = false;
@@ -404,11 +404,13 @@ static bool cj5__parse_primitive(cj5__parser* parser, cj5_result* r, const char*
     return false;
 
 found:
-    token = cj5__alloc_token(parser, tokens, max_tokens);
-    if (token == NULL) {
-        r->error = CJ5_ERROR_OVERFLOW;
-        --parser->pos;
-        return true;
+    if (tokens) {
+        token = cj5__alloc_token(parser, tokens, max_tokens);
+        if (token == NULL) {
+            r->error = CJ5_ERROR_OVERFLOW;
+            --parser->pos;
+            return true;
+        }
     }
 
     cj5_token_type type;
@@ -501,17 +503,19 @@ found:
         ++parser->line;
     }
 
-    token->type = type;
-    if (type == CJ5_TOKEN_STRING) {
-        token->key_hash = cj5__hash_fnv32(&json5[start], &json5[parser->pos]);
-        token->key_start = start;
-        token->key_end = parser->pos;
-    } else {
-        token->num_type = num_type;
+    if (tokens && token) {
+        token->type = type;
+        if (type == CJ5_TOKEN_STRING) {
+            token->key_hash = cj5__hash_fnv32(&json5[start], &json5[parser->pos]);
+            token->key_start = start;
+            token->key_end = parser->pos;
+        } else {
+            token->num_type = num_type;
+        }
+        token->start = start;
+        token->end = parser->pos;
+        token->parent_id = parser->super_id;
     }
-    token->start = start;
-    token->end = parser->pos;
-    token->parent_id = parser->super_id;
     --parser->pos;
     return true;
 }
@@ -530,17 +534,18 @@ static bool cj5__parse_string(cj5__parser* parser, cj5_result* r, const char* js
 
         // end of string
         if (str_open == c) {
-            token = cj5__alloc_token(parser, tokens, max_tokens);
-            if (token == NULL) {
-                r->error = CJ5_ERROR_OVERFLOW;
-                return true;
+            if (tokens) {
+                token = cj5__alloc_token(parser, tokens, max_tokens);
+                if (token == NULL) {
+                    r->error = CJ5_ERROR_OVERFLOW;
+                    return true;
+                }
+
+                token->type = CJ5_TOKEN_STRING;
+                token->start = start + 1;
+                token->end = parser->pos;
+                token->parent_id = parser->super_id;
             }
-
-            token->type = CJ5_TOKEN_STRING;
-            token->start = start + 1;
-            token->end = parser->pos;
-            token->parent_id = parser->super_id;
-
             return true;
         }
 
@@ -573,6 +578,10 @@ static bool cj5__parse_string(cj5__parser* parser, cj5_result* r, const char* js
 
                 --parser->pos;
                 break;
+            case '\r':
+                if (parser->pos + 1 < len && json5[parser->pos + 1] == '\n') {
+                    ++parser->pos;;
+                }
             case '\n':
                 line_start = parser->pos;
                 ++parser->line;
@@ -630,25 +639,27 @@ cj5_result cj5_parse(const char* json5, int len, cj5_token* tokens, int max_toke
         case '[':
             can_comment = false;
             count++;
-            token = cj5__alloc_token(&parser, tokens, max_tokens);
-            if (token == NULL) {
-                r.error = CJ5_ERROR_OVERFLOW;
-                break;
-            }
-
-            if (parser.super_id != -1) {
-                cj5_token* super_token = &tokens[parser.super_id];
-                token->parent_id = parser.super_id;
-                if (++super_token->size == 1 && super_token->type == CJ5_TOKEN_STRING) {
-                    super_token->key_hash =
-                        cj5__hash_fnv32(&json5[super_token->start], &json5[super_token->end]);
-                    super_token->key_start = super_token->start;
-                    super_token->key_end = super_token->end;
+            if (tokens) {
+                token = cj5__alloc_token(&parser, tokens, max_tokens);
+                if (token == NULL) {
+                    r.error = CJ5_ERROR_OVERFLOW;
+                    break;
                 }
-            }
 
-            token->type = (c == '{' ? CJ5_TOKEN_OBJECT : CJ5_TOKEN_ARRAY);
-            token->start = parser.pos;
+                if (parser.super_id != -1) {
+                    cj5_token* super_token = &tokens[parser.super_id];
+                    token->parent_id = parser.super_id;
+                    if (++super_token->size == 1 && super_token->type == CJ5_TOKEN_STRING) {
+                        super_token->key_hash =
+                            cj5__hash_fnv32(&json5[super_token->start], &json5[super_token->end]);
+                        super_token->key_start = super_token->start;
+                        super_token->key_end = super_token->end;
+                    }
+                }
+
+                token->type = (c == '{' ? CJ5_TOKEN_OBJECT : CJ5_TOKEN_ARRAY);
+                token->start = parser.pos;
+            }
             parser.super_id = parser.next_id - 1;
             break;
 
